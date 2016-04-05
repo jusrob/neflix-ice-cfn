@@ -1,0 +1,347 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Deploy Netflix Ice as a Service.  It is compsed of two parts: a reader(displays your programmatic billing) and a processor (reads your programmatic billing).",
+
+  "Parameters" : {
+
+    "CompanyName" : {
+      "Description" : "The name of your comapny (displayed on the dashboard)",
+      "Type" : "String",
+      "Default" : "NewCo"
+    },
+
+    "BillingBucketName" : {
+      "Description" : "S3 bucket name where the programmatic billing files are",
+      "Type" : "String",
+      "Default" : "billing-ice"
+    },
+
+    "BillingBucketRole" : {
+      "Description" : "Role Name to assume for billing account",
+      "Type" : "String",
+      "Default" : "IceBillingAccess"
+    },
+
+    "BillingBucketAccount" : {
+      "Description" : "AWS account where billing bucket resides",
+      "Type" : "String",
+      "Default" : "***********"
+    },
+
+    "CostAllocationTags" : {
+      "Description" : "Tags used to make cost breakdown.",
+      "Type" : "String",
+      "Default" : "noCostBreakdown"
+    },
+
+    "ThroughputMetricConfigurationData" : {
+      "Description" : "Configuration data for the cost-per-business-unit feature.",
+      "Type" : "String",
+      "Default" : "{}"
+    },
+
+    "AccessProtectionKey" : {
+      "Description" : "Leave as is for no protection.",
+      "Type" : "String",
+      "Default" : "noProtection"
+    },
+
+    "EC2InstanceSize" : {
+      "Description" : "The EC2 instance size to host reader and parser (2 instances will be launched).",
+      "Type" : "String",
+      "Default" : "t2.medium",
+      "AllowedValues" : [ "t2.small", "t2.medium", "t2.large", "m3.medium", "m3.large", "m3.xlarge", "m3.2xlarge", "m4.large", "m4.xlarge", "m4.2xlarge" ]
+    },
+
+    "IceVpcId" : {
+      "Description" : "The VPC ID of the VPC you would like to build in.",
+      "Type" : "String",
+      "Default" : "vpc-*******",
+      "AllowedPattern" : "^(?:vpc-[0-9a-f]{8}|)$"
+    },
+
+    "IceSubnetId" : {
+      "Description" : "The Subnet ID of the subnet of your VPC you want to deploy to.",
+      "Type" : "String",
+      "Default" : "subnet-*******",
+      "AllowedPattern" : "^(?:subnet-[0-9a-f]{8}|)$"
+    }
+  },
+
+  "Mappings" : {
+    "AWSRegionArchToAMI" : {
+      "us-east-1" : {
+        "hvm64ebs"        : "ami-60b6c60a",
+        "hvm64instance"   : "ami-66b6c60c",
+        "pv64ebs"         : "ami-5fb8c835",
+        "pv64instance"    : "ami-30b6c65a"
+      },
+      "us-west-2" : {
+        "hvm64ebs"        : "ami-f0091d91",
+        "hvm64instance"   : "ami-31342050",
+        "pv64ebs"         : "ami-d93622b8",
+        "pv64instance"    : "ami-960317f7"
+      }
+    },
+
+    "EC2InstanceTypeToJVMLimitation" : {
+      "t2.small"     : { "grailsOPTS" : "-Xms1g -Xmx1g"},
+      "t2.medium"    : { "grailsOPTS" : "-Xms3g -Xmx3g"},
+      "t2.large"     : { "grailsOPTS" : "-Xms6g -Xmx6g" },
+      "m3.medium"    : { "grailsOPTS" : "-Xms3g -Xmx3g"},
+      "m3.large"     : { "grailsOPTS" : "-Xms6g -Xms6g"},
+      "m3.xlarge"    : { "grailsOPTS" : "-Xms14g -Xmx14g" },
+      "m3.2xlarge"   : { "grailsOPTS" : "-Xms30g -Xmx30g"},
+      "m4.large"     : { "grailsOPTS" : "-Xms6g -Xmx6g" },
+      "m4.xlarge"    : { "grailsOPTS" : "-Xms14g -Xmx14g" },
+      "m4.2xlarge"   : { "grailsOPTS" : "-Xms30g -Xmx30g" }
+    }
+  },
+	"Resources" : {
+  "IceWorkingBucket" : {
+    "Type" : "AWS::S3::Bucket",
+    "Properties" : {
+      "AccessControl" : "Private",
+      "Tags" : [
+        { "Key" : "Name", "Value" : "Netflix-Ice-as-a-Service-WORKINGBUCKET" },
+        { "Key" : "Product", "Value" : "Netflix-Ice-as-a-Service" }
+      ]
+    }
+  },
+
+  "IceS3AccessIAMUser" : {
+    "Type" : "AWS::IAM::User",
+    "Properties" : {
+      "Path" : "/",
+      "Policies" : [
+        {
+          "PolicyName" : "NetflixIceAsAService-FullAccessWorkingBucket",
+          "PolicyDocument" : {
+            "Statement" : {
+              "Effect" : "Allow",
+              "Action" : [ "s3:*" ],
+              "Resource" : [
+                { "Fn::Join" : [ "" ,
+                  [
+                    "arn:aws:s3:::" , { "Ref" : "IceWorkingBucket" }
+                  ]
+                ]},
+                { "Fn::Join" : [ "" ,
+                  [
+                    "arn:aws:s3:::" , { "Ref" : "IceWorkingBucket" }, "/*"
+                  ]
+                ]}
+              ]
+            }
+          }
+        },
+        {
+          "PolicyName" : "NetflixIceAsAService-DescribeReservedInstancesOfferings",
+          "PolicyDocument" : {
+            "Statement" : {
+              "Effect" : "Allow",
+              "Action" : [ "ec2:DescribeReservedInstancesOfferings" ],
+              "Resource" : [ "*" ]
+            }
+          }
+        },
+
+        {
+          "PolicyName" : "NetflixceAsAService-SendEmailThroughSES",
+          "PolicyDocument" : {
+            "Statement" :  {
+              "Action": [ "ses:SendEmail" ],
+              "Resource": [ "*" ],
+              "Effect": "Allow"
+            }
+          }
+        },
+
+        {
+          "PolicyName" : "NetflixceAsAService-CrossAccountAccess",
+          "PolicyDocument" : {
+            "Statement" :  {
+              "Action": [ "sts:AssumeRole" ],
+              "Resource": [ "arn:aws:iam::<account number>:role/IceBillingAccess" ],
+              "Effect": "Allow"
+            }
+          }
+        }
+      ]
+    }
+  },
+
+  "IceIAMUserKeys" : {
+    "Type" : "AWS::IAM::AccessKey",
+    "Properties" : {
+      "UserName" : { "Ref" : "IceS3AccessIAMUser" }
+    }
+  },
+
+  "IceReaderSecurityGroup" : {
+    "Type" : "AWS::EC2::SecurityGroup",
+    "Properties" :
+    {
+      "GroupDescription" : "Security group for Reader EC2 instance of Netflix-Ice-as-a-Service.",
+      "VpcId" : { "Ref" : "IceVpcId" },
+      "SecurityGroupIngress" : [{
+        "IpProtocol" : "tcp",
+        "FromPort" : "8080",
+        "ToPort" : "8080",
+        "CidrIp" : "10.0.0.0/8"
+      }, {
+        "IpProtocol" : "tcp",
+        "FromPort" : "22",
+        "ToPort" : "22",
+        "CidrIp" : "10.0.0.0/8"
+      }]
+    }
+  },
+
+  "IceProcessorSecurityGroup" : {
+    "Type" : "AWS::EC2::SecurityGroup",
+    "Properties" :
+    {
+      "GroupDescription" : "Security group for Processor EC2 instance of Netflix-Ice-as-a-Service.",
+      "VpcId" : { "Ref" : "IceVpcId" },
+      "SecurityGroupIngress" : [{
+        "IpProtocol" : "tcp",
+        "FromPort" : "22",
+        "ToPort" : "22",
+        "CidrIp" : "10.0.0.0/8"
+      }]
+    }
+  },
+
+  "IceProcessorInstance" : {
+    "Type" : "AWS::EC2::Instance",
+    "Properties" : {
+      "SubnetId" : { "Ref" : "IceSubnetId" },
+      "KeyName" : "tas-billingops-us-east-1",
+      "InstanceType" : { "Ref" : "EC2InstanceSize" },
+      "ImageId" : { "Fn::FindInMap" : ["AWSRegionArchToAMI", { "Ref" : "AWS::Region" }, "hvm64ebs"] },
+      "SecurityGroupIds" : [{"Fn::GetAtt": ["IceProcessorSecurityGroup", "GroupId"]}],
+      "Tags" : [
+        { "Key" : "Name", "Value" : "Netflix-Ice-as-a-Service-PROCESSOR" },
+        { "Key" : "Product", "Value" : "Netflix-Ice-as-a-Service" },
+        { "Key" : "Tenant", "Value" : { "Ref" : "CompanyName" } }
+      ],
+      "UserData" : { "Fn::Base64" : { "Fn::Join" : [ "" , [
+        "#!/bin/bash\n",
+
+        "sed -i 's/- scripts-user/- [scripts-user, always]/' /etc/cloud/cloud.cfg.d/00_defaults.cfg\n",
+        "export ICE_READER='false'\n",
+        "export ICE_PROCESSOR='true'\n",
+        "export ICE_BILLING_BUCKET_NAME=", { "Ref" : "BillingBucketName" }, "\n",
+        "export ICE_BILLING_BUCKET_ROLE=", { "Ref" : "BillingBucketRole"}, "\n",
+        "export ICE_BILLING_BUCKET_ACCOUNT=", { "Ref" : "BillingBucketAccount"}, "\n",
+        "export ICE_WORKING_BUCKET_NAME=", { "Ref" : "IceWorkingBucket" } ,"\n",
+        "export ICE_WORKING_BUCKET_ACCESS_KEY=", { "Ref" : "IceIAMUserKeys" },"\n",
+        "export ICE_WORKING_BUCKET_SECRET_KEY=", { "Fn::GetAtt" : [ "IceIAMUserKeys" , "SecretAccessKey" ] },"\n",
+        "export ICE_COMPANY_NAME=\"", { "Ref" : "CompanyName" },"\"\n",
+        "export ACCESS_PROTECTION_KEY=", { "Ref" : "AccessProtectionKey"},"\n",
+        "export ICE_CUSTOM_TAGS='", { "Ref" : "CostAllocationTags"},"'\n",
+        "export ICE_THROUGHPUT_METRIC_CONFIGURATION_DATA='", { "Ref" : "ThroughputMetricConfigurationData"},"'\n",
+        "export GRAILS_OPTS='", { "Fn::FindInMap" : [ "EC2InstanceTypeToJVMLimitation" , { "Ref" : "EC2InstanceSize" } , "grailsOPTS" ] },"'\n",
+        "export JAVA_HOME=/usr/lib/jvm/java\n",
+        "rm -rf /home/ec2-user/ice*", "\n",
+        "rm -rf /home/ec2-user/.grails", "\n",
+        "rm -rf /tmp/ice", "\n",
+        "rm -rf /tmp/properties.txt", "\n",
+        "echo 'Defaults:%ec2-user !requiretty' >> /etc/sudoers\n",
+        "echo 'Defaults:ec2-user !requiretty' >> /etc/sudoers\n",
+        "touch /var/log/ice_reader.log\n",
+        "touch /var/log/ice_processor.log\n",
+        "chmod 777 /var/log/ice_reader.log\n",
+        "chmod 777 /var/log/ice_processor.log\n",
+        "ICE_REPO_URL='https://github.com/Netflix/ice.git'\n",
+        "yum -y install git\n",
+        "git clone ${ICE_REPO_URL} /tmp/ice\n",
+        "echo $ICE_BILLING_BUCKET_NAME >> /tmp/properties.txt\n",
+        "echo $ICE_WORKING_BUCKET_NAME >> /tmp/properties.txt\n",
+        "sed -i 's/=2.2.1/=2.4.4/g' /tmp/ice/install.sh\n",
+        "sed -i 's/java-1.6.0/java-1.7.0/g' /tmp/ice/install.sh\n",
+        "touch /etc/redhat-release\n",
+        "su - ec2-user -c /tmp/ice/install.sh < /tmp/properties.txt\n",
+        "rm -f /home/ec2-user/ice/grails-app/i18n/messages.properties\n",
+        "rm -f /home/ec2-user/ice/src/java/ice.propertiese\n",
+        "export ICE_HOME=/home/ec2-user/ice\n",
+        "sed -i \"s/ice.processor=true/ice.processor=$ICE_PROCESSOR/\" /home/ec2-user/ice/src/java/ice.properties\n",
+        "sed -i \"s/ice.reader=false/ice.reader=$ICE_READER/\" /home/ec2-user/ice/src/java/ice.properties\n",
+        "sed -i \"s/ice.companyName=Your Company Name/ice.companyName=$ICE_COMPANY_NAME/\" /home/ec2-user/ice/src/java/ice.properties\n",
+        "sed -i 's/,billing_s3bucketname2//g' /home/ec2-user/ice/src/java/ice.properties\n",
+        "cd /home/ec2-user/ice\n",
+        "/home/ec2-user/ice/grailsw -Djava.net.preferIPv4Stack=true -Djava.net.preferIPv4Addresses -Dice.s3AccessKeyId=$ICE_WORKING_BUCKET_ACCESS_KEY -Dice.s3SecretKey=$ICE_WORKING_BUCKET_SECRET_KEY run-app>> /var/log/ice_processor.log\n"
+      ]]}}
+
+    }
+  },
+
+  "IceReaderInstance" : {
+      "Type" : "AWS::EC2::Instance",
+      "Properties" : {
+        "SubnetId" : { "Ref" : "IceSubnetId" },
+        "KeyName" : "tas-billingops-us-east-1",
+        "InstanceType" : { "Ref" : "EC2InstanceSize" },
+        "ImageId" : { "Fn::FindInMap" : ["AWSRegionArchToAMI", { "Ref" : "AWS::Region" }, "hvm64ebs"] },
+        "SecurityGroupIds" : [{"Fn::GetAtt": ["IceReaderSecurityGroup", "GroupId"]}],
+        "Tags" : [
+          { "Key" : "Name", "Value" : "Netflix-Ice-as-a-Service-READER" },
+          { "Key" : "Product", "Value" : "Netflix-Ice-as-a-Service" },
+                      { "Key" : "Tenant", "Value" : { "Ref" : "CompanyName" } }
+        ],
+        "UserData" : { "Fn::Base64" : { "Fn::Join" : [ "" , [
+          "#!/bin/bash\n",
+
+          "sed -i 's/- scripts-user/- [scripts-user, always]/' /etc/cloud/cloud.cfg.d/00_defaults.cfg\n",
+          "export ICE_READER='true'\n",
+          "export ICE_PROCESSOR='false'\n",
+          "export ICE_BILLING_BUCKET_NAME=", { "Ref" : "BillingBucketName" }, "\n",
+          "export ICE_BILLING_BUCKET_ROLE=", { "Ref" : "BillingBucketRole"}, "\n",
+          "export ICE_BILLING_BUCKET_ACCOUNT=", { "Ref" : "BillingBucketAccount"}, "\n",
+          "export ICE_WORKING_BUCKET_NAME=", { "Ref" : "IceWorkingBucket" } ,"\n",
+          "export ICE_WORKING_BUCKET_ACCESS_KEY=", { "Ref" : "IceIAMUserKeys" },"\n",
+          "export ICE_WORKING_BUCKET_SECRET_KEY=", { "Fn::GetAtt" : [ "IceIAMUserKeys" , "SecretAccessKey" ] },"\n",
+          "export ICE_COMPANY_NAME=\"", { "Ref" : "CompanyName" },"\"\n",
+          "export ACCESS_PROTECTION_KEY=", { "Ref" : "AccessProtectionKey"},"\n",
+          "export ICE_CUSTOM_TAGS='", { "Ref" : "CostAllocationTags"},"'\n",
+          "export ICE_THROUGHPUT_METRIC_CONFIGURATION_DATA='", { "Ref" : "ThroughputMetricConfigurationData"},"'\n",
+          "export GRAILS_OPTS='", { "Fn::FindInMap" : [ "EC2InstanceTypeToJVMLimitation" , { "Ref" : "EC2InstanceSize" } , "grailsOPTS" ] },"'\n",
+          "export JAVA_HOME=/usr/lib/jvm/java\n",
+          "rm -rf /home/ec2-user/ice*", "\n",
+          "rm -rf /home/ec2-user/.grails", "\n",
+          "rm -rf /tmp/ice", "\n",
+          "rm -rf /tmp/properties.txt", "\n",
+          "echo 'Defaults:%ec2-user !requiretty' >> /etc/sudoers\n",
+          "echo 'Defaults:ec2-user !requiretty' >> /etc/sudoers\n",
+          "touch /var/log/ice_reader.log\n",
+          "touch /var/log/ice_processor.log\n",
+          "chmod 777 /var/log/ice_reader.log\n",
+          "chmod 777 /var/log/ice_processor.log\n",
+          "ICE_REPO_URL='https://github.com/Netflix/ice.git'\n",
+          "yum -y install git\n",
+          "git clone ${ICE_REPO_URL} /tmp/ice\n",
+          "echo $ICE_BILLING_BUCKET_NAME >> /tmp/properties.txt\n",
+          "echo $ICE_WORKING_BUCKET_NAME >> /tmp/properties.txt\n",
+          "sed -i 's/=2.2.1/=2.4.4/g' /tmp/ice/install.sh\n",
+          "sed -i 's/java-1.6.0/java-1.7.0/g' /tmp/ice/install.sh\n",
+          "touch /etc/redhat-release\n",
+          "su - ec2-user -c /tmp/ice/install.sh < /tmp/properties.txt\n",
+          "rm -f /home/ec2-user/ice/grails-app/i18n/messages.properties\n",
+          "rm -f /home/ec2-user/ice/src/java/ice.propertiese\n",
+          "export ICE_HOME=/home/ec2-user/ice\n",
+          "sed -i 's/,billing_s3bucketname2//g' /home/ec2-user/ice/src/java/ice.properties\n",
+          "sed -i \"s/ice.processor=true/ice.processor=$ICE_PROCESSOR/\" /home/ec2-user/ice/src/java/ice.properties\n",
+          "sed -i \"s/ice.reader=false/ice.reader=$ICE_READER/\" /home/ec2-user/ice/src/java/ice.properties\n",
+          "sed -i \"s/ice.companyName=Your Company Name/ice.companyName=$ICE_COMPANY_NAME/\" /home/ec2-user/ice/src/java/ice.properties\n",
+          "echo ice.billing_accessRoleName=$ICE_BILLING_BUCKET_ROLE >> /home/ec2-user/ice/src/java/ice.properties\n",
+          "echo ice.billing_payerAccountId=$ICE_BILLING_BUCKET_ACCOUNT >> /home/ec2-user/ice/src/java/ice.properties\n",
+          "cd /home/ec2-user/ice\n",
+          "sleep 150\n",
+          "/home/ec2-user/ice/grailsw -Djava.net.preferIPv4Stack=true -Djava.net.preferIPv4Addresses -Dice.s3AccessKeyId=$ICE_WORKING_BUCKET_ACCESS_KEY -Dice.s3SecretKey=$ICE_WORKING_BUCKET_SECRET_KEY run-app>> /var/log/ice_reader.log\n"
+        ]]}}
+
+      }
+    }
+  }
+}
